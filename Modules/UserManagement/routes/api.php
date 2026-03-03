@@ -40,6 +40,8 @@ Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
 Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+Route::post('/verify-Mfa', [AuthController::class, 'verifyMfa']);
+
 
 Route::middleware('auth:sanctum')->get('/email/verify/{id}/{hash}', function (EmailVerificationRequest $request) {
     $request->fulfill();

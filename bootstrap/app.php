@@ -16,8 +16,7 @@ return Application::configure(basePath: dirname(__DIR__))
             \App\Http\Middleware\SetTenantFromToken::class,
             'throttle:api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
-            \App\Http\Middleware\InitializeTenant::class,
-            \App\Http\Middleware\CheckAccessTokenExpiry::class,
+            \App\Http\Middleware\InitializeTenant::class
         ]);
 
         // 🔐 Sanctum stateful middleware (for SPA or auth sessions)
@@ -26,6 +25,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'tenant.scope' => \App\Http\Middleware\SetTenantFromToken::class,
             'role' => \Spatie\Permission\Middleware\RoleMiddleware::class,
             'permission' => \Spatie\Permission\Middleware\PermissionMiddleware::class,
+            '2fa' => \PragmaRX\Google2FALaravel\Middleware::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

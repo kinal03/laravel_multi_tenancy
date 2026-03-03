@@ -25,7 +25,10 @@ class User extends Authenticatable implements MustVerifyEmail
         'name',
         'email',
         'password',
+        'google2fa_secret',
         'user_type',
+        'failed_attempts',
+        'locked_until',
         'tenant_id',
         'email_verified_at'
     ];
@@ -38,22 +41,15 @@ class User extends Authenticatable implements MustVerifyEmail
     protected $hidden = [
         'password',
         'remember_token',
+        'google2fa_secret',
+    ];
+
+    protected $casts = [
+        'email_verified_at' => 'datetime',
+        'password' => 'hashed',
     ];
 
     protected string $guard_name = 'sanctum';
-
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
-    protected function casts(): array
-    {
-        return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
-        ];
-    }
 
     /**
      * Relationship: the central tenant this user belongs to.
@@ -62,5 +58,4 @@ class User extends Authenticatable implements MustVerifyEmail
     {
         return $this->belongsTo(\App\Models\Tenant::class, 'tenant_id', 'id');
     }
-
 }

@@ -22,6 +22,11 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\URL;
 use Laravel\Sanctum\PersonalAccessToken;
 use Illuminate\Validation\Rule;
+use PragmaRX\Google2FAQRCode\Google2FA;
+use BaconQrCode\Renderer\ImageRenderer;
+use BaconQrCode\Renderer\Image\SvgImageBackEnd;
+use BaconQrCode\Renderer\RendererStyle\RendererStyle;
+use BaconQrCode\Writer;
 
 class AuthController extends Controller
 {   
@@ -149,7 +154,7 @@ class AuthController extends Controller
             'status' => true,
             'message' => 'Your accountregistered successfully',
             // 'user' => $tenantUser->load('roles.permissions'),
-            'token' => $token,
+            //'token' => $token,
             // 'tenant' => $tenant
         ]);
     }
@@ -372,7 +377,7 @@ class AuthController extends Controller
         }
     }
 
-    public function login(Request $request): JsonResponse
+    public function loginOld(Request $request): JsonResponse
     {
         $request->validate([
             'email' => 'required|email',
@@ -523,6 +528,222 @@ class AuthController extends Controller
             'status' => false,
             'message' => 'Invalid user type.'
         ], 403);
+    }
+
+    public function login(Request $request): JsonResponse
+    {
+        $request->validate([
+            'email' => 'required|email',
+            'password' => 'required',
+        ]);
+
+        tenancy()->end();
+
+        $google2fa = new Google2FA();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 1️⃣ CHECK CENTRAL USER
+        |--------------------------------------------------------------------------
+        */
+        $centralUser = User::where('email', $request->email)->first();
+
+        if ($centralUser && Hash::check($request->password, $centralUser->password)) {
+
+            if (!$centralUser->email_verified_at) {
+                return response()->json(['message' => 'Verify email first'], 403);
+            }
+
+            return $this->handleMfaFlow($centralUser, 'central', null, $google2fa);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 2️⃣ CHECK TENANT USER
+        |--------------------------------------------------------------------------
+        */
+        $relation = CentralTenantTelations::where([
+            'email' => $request->email,
+            'status' => 'active'
+        ])->first();
+
+        if ($relation) {
+
+            $tenant = Tenant::find($relation->tenant_id);
+
+            if (!$tenant) {
+                return response()->json(['message' => 'Tenant not found'], 404);
+            }
+
+            tenancy()->initialize($tenant);
+
+            $tenantUser = User::where('email', $request->email)->first();
+
+            if (!$tenantUser || !Hash::check($request->password, $tenantUser->password)) {
+                tenancy()->end();
+                return response()->json(['message' => 'Invalid credentials'], 401);
+            }
+
+            if (!$tenantUser->email_verified_at) {
+                tenancy()->end();
+                return response()->json(['message' => 'Verify email first'], 403);
+            }
+
+            $response = $this->handleMfaFlow($tenantUser, 'tenant', $tenant->id, $google2fa);
+
+            tenancy()->end();
+
+            return $response;
+        }
+
+        return response()->json(['message' => 'Invalid credentials'], 401);
+    }
+
+    private function handleMfaFlow($user, $userType, $tenantId, $google2fa)
+    {
+        /*
+        |--------------------------------------------------------------------------
+        | FIRST TIME SETUP → GENERATE QR
+        |--------------------------------------------------------------------------
+        */
+        if (empty($user->google2fa_secret)) {
+
+            $secret = $google2fa->generateSecretKey();
+
+            cache()->put('mfa_setup_'.$userType.'_'.$user->id, $secret, now()->addMinutes(10));
+
+
+            $qrCodeUrl = $google2fa->getQRCodeUrl(
+                config('app.name'),
+                $user->email,
+                $secret
+            );
+
+            $renderer = new ImageRenderer(
+                new RendererStyle(200),
+                new SvgImageBackEnd()
+            );
+
+            $writer = new Writer($renderer);
+
+            return response()->json([
+                'message' => "Please scan the QR code with Google Authenticator and enter the 6-digit OTP to continue.",
+                'user_id' => $user->id,
+                'user_type' => $userType,
+                'tenant_id' => $tenantId,
+                'qr_code' => base64_encode($writer->writeString($qrCodeUrl))
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | SECRET EXISTS → REQUIRE OTP
+        |--------------------------------------------------------------------------
+        */
+        return response()->json([
+            'message' => "Please open your Google Authenticator and enter the 6-digit code.",
+            'user_id' => $user->id,
+            'user_type' => $userType,
+            'tenant_id' => $tenantId
+        ]);
+    }
+
+    public function verifyMfa(Request $request)
+    {
+        $request->validate([
+            'user_id'   => 'required',
+            'otp'       => 'required|digits:6',
+            'user_type' => 'required|in:central,tenant',
+            'tenant_id' => 'nullable'
+        ]);
+
+        $google2fa = new Google2FA();
+
+        /*
+        |--------------------------------------------------------------------------
+        | INITIALIZE TENANCY
+        |--------------------------------------------------------------------------
+        */
+        if ($request->user_type === 'tenant') {
+            $tenant = Tenant::find($request->tenant_id);
+
+            if (!$tenant) {
+                return response()->json(['message' => 'Tenant not found'], 404);
+            }
+
+            tenancy()->initialize($tenant);
+        } else {
+            tenancy()->end();
+        }
+
+        $user = User::find($request->user_id);
+
+        if (!$user) {
+            return response()->json(['message' => 'User not found'], 404);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | DETERMINE SECRET (SETUP OR LOGIN)
+        |--------------------------------------------------------------------------
+        */
+        $cacheKey = 'mfa_setup_'.$request->user_type.'_'.$user->id;
+        $cachedSecret = cache()->get($cacheKey);
+
+        // Use cached secret if exists (first-time setup)
+        $secret = $cachedSecret ?: $user->google2fa_secret;
+
+        if (!$secret || strlen($secret) < 16) {
+            return response()->json(['message' => 'Invalid or missing MFA secret'], 400);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | VERIFY OTP (ALLOW SMALL TIME DRIFT)
+        |--------------------------------------------------------------------------
+        */
+        if (!$google2fa->verifyKey($secret, $request->otp, 4)) {
+            return response()->json(['message' => 'Invalid OTP'], 401);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | IF FIRST TIME SETUP → SAVE SECRET
+        |--------------------------------------------------------------------------
+        */
+        if ($cachedSecret) {
+            $user->google2fa_secret = $cachedSecret; // encrypt() if you want
+            $user->save();
+
+            cache()->forget($cacheKey);
+        }
+
+        return $this->generateTokens(
+            $user,
+            $request->user_type,
+            $request->tenant_id
+        );
+    }
+
+    private function generateTokens($user, $userType, $tenantId = null)
+    {
+        $user->tokens()->delete();
+
+        $access = $user->createToken('access-token', ['*'], now()->addMinutes(10));
+        $refresh = $user->createToken('refresh-token', ['refresh'], now()->addMinutes(30));
+
+        $accessModel = $access->accessToken;
+        $accessModel->mfa_verified = true;
+        $accessModel->tenant_id = $tenantId;
+        $accessModel->save();
+
+        return response()->json([
+            'status' => true,
+            'token' => $access->plainTextToken,
+            'refresh_token' => $refresh->plainTextToken,
+            'user_type' => $userType,
+            'tenant_id' => $tenantId
+        ]);
     }
 
     public function refreshToken(Request $request)
