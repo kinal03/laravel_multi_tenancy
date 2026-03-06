@@ -109,7 +109,9 @@ class DatabaseSeeder extends Seeder
         );
  
         Settings::insert([
-            ['key' => 'expired_link_duration', 'value' => '2'],  
+            ['key' => 'expired_link_duration', 'value' => '2'],
+            ['key' => 'access_token_expires_in_minutes', 'value' => '1'],
+            ['key' => 'refresh_token_expires_in_minutes', 'value' => '120'],  
             ['key' => 'login_attempt_seconds', 'value' => '6'],   // gap in seconds
             ['key' => 'login_attempt_minute', 'value' => '5'],     // per minute
             ['key' => 'login_attempt_hour', 'value' => '30'],      // per hour

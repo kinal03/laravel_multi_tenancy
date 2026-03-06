@@ -26,10 +26,10 @@ use Illuminate\Validation\Rule;
  
 class UserController extends Controller
 {  
-     public function getUsers(Request $request)
+    public function getUsers(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'user_type' => 'required|in:admin,agency',
+            'user_type' => 'nullable|in:admin,agency',
             'search'   => 'nullable|string|max:255',
         ]);
  
@@ -42,13 +42,22 @@ class UserController extends Controller
             'admin'  => 'admin-access',
             'agency' => 'agency-access',
         ];
- 
-        if (!$request->user()->can($permissionMap[$request->user_type])) {
-            return response()->json(['message' => 'Access Denied.'], 403);
+
+        if($request->user_type != ''){
+            if (!$request->user()->can($permissionMap[$request->user_type])) {
+                return response()->json(['message' => 'Access Denied.'], 403);
+            }
         }
+
+        // Default values
+        $limit = $request->limit ?? 10;
+        $sort  = $request->sort ?? 'created_at';
+        $dir   = $request->dir ?? 'desc';
  
         $users = User::whereHas('roles', function ($q) use ($request) {
-            $q->where('name', $request->user_type);
+            if($request->user_type != ''){
+                $q->where('name', $request->user_type);
+            }
         });
  
         // Search filter
@@ -59,10 +68,12 @@ class UserController extends Controller
                 ->orWhere('email', 'like', "%{$search}%");
             });
         }
+
+        $users->orderBy($sort, $dir);
  
         return response()->json([
             'status' => true,
-            'users'  => $users->paginate(10),
+            'users'  => $users->paginate($limit),
         ], 200);
     }
  
@@ -131,19 +142,22 @@ class UserController extends Controller
             }
  
             tenancy()->initialize($tenant);
-                $user = User::find($request->id);
- 
-                if (!$user) {
-                    return response()->json(['message' => 'User not found.'], 404);
-                }
-                $user->load('roles.permissions','tenant');
+            $user = User::find($request->id);
+
+            if (!$user) {
+                return response()->json(['message' => 'User not found.'], 404);
+            }
+            
+            // $user->load('roles.permissions','tenant');
+            $user->load('roles','tenant');
+
             tenancy()->end();
-        }else{
+        } else {
             $user = User::find($request->id);
  
             if($request->user_type == 'admin'){
                 $permissionName = 'admin-show';
-            }else{
+            } else {
                 $permissionName = 'agency-show';
             }
  
@@ -151,7 +165,8 @@ class UserController extends Controller
                 return response()->json(['message' => 'Access Denied.'], 403);
             }
        
-            $user->load('roles.permissions','tenant');
+            // $user->load('roles.permissions','tenant');
+            $user->load('roles','tenant');
         }
        
         return response()->json([

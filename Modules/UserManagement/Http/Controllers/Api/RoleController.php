@@ -35,18 +35,45 @@ class RoleController extends Controller
     }
 
     public function index(Request $request): JsonResponse
-    {
+    {   
         return $this->runInTenant($request->tenant_id, function () use ($request) {
             $permission = $request->filled('tenant_id')
-                ? 'tenant-role-access'
-                : 'role-access';
-
+            ? 'tenant-role-access'
+            : 'role-access';
+            
             if (!$request->user()->can($permission)) {
                 return response()->json(['message' => 'Access Denied.'], 403);
             }
 
+            
+            if($request->select == true){
+                $roles = Role::select('id', 'name')->orderBy('name')->get();
+                } else {
+                    // Default values
+                    
+                    $limit = $request->limit ?? 10;
+                    $sort  = $request->sort ?? 'created_at';
+                    $dir   = $request->dir ?? 'desc';
+                    // echo 'dfgdfg'; die();
+
+                $roles = Role::with('permissions');
+                
+                 // Search filter
+                if ($request->filled('search')) {
+                    $search = $request->search;
+                    $roles->where(function ($q) use ($search) {
+                        $q->where('name', 'like', "%{$search}%")
+                          ->orWhereHas('permissions', function ($q2) use ($search) {
+                              $q2->where('name', 'like', "%{$search}%");
+                          });
+                    });
+                }
+
+               $roles = $roles->orderBy($sort, $dir)->paginate($limit);
+            }
+
             return response()->json([
-                'roles' => Role::with('permissions')->orderBy('name')->get()
+                'roles' => $roles
             ]);
         });
     }
