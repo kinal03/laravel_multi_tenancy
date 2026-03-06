@@ -25,6 +25,16 @@ class AuthenticateSanctumMultiTenant
         $token = PersonalAccessToken::findToken($bearer);
 
         if ($token && $token->tokenable) {
+            if ($token->token_type === 'access') {
+                if ($token->expires_at && now()->greaterThan($token->expires_at)) {
+                    $token->delete(); // expired token delete
+
+                    return response()->json([
+                        'message' => 'Access token expired'
+                    ], 401);
+                }
+            }
+
             // User exists in central database
             $user = $token->tokenable;
 
@@ -45,6 +55,16 @@ class AuthenticateSanctumMultiTenant
             $token = PersonalAccessToken::findToken($bearer);
 
             if ($token && $token->tokenable) {
+                if ($token->expires_at && now()->greaterThan($token->expires_at)) {
+                    $token->delete(); // expired token delete
+
+                    tenancy()->end();
+
+                    return response()->json([
+                        'message' => 'Access token expired'
+                    ], 401);
+                }
+
                 // User found in tenant database, keep tenant initialized
                 $user = $token->tokenable;
 
@@ -59,6 +79,7 @@ class AuthenticateSanctumMultiTenant
         // End tenancy if no token found
         tenancy()->end();
 
-        return $next($request);
+        // return $next($request);
+        return response()->json(['message' => 'Unauthenticated'], 401);
     }
 }

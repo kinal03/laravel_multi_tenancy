@@ -25,7 +25,7 @@ class VerifyRecaptcha
             $response = Http::asForm()
                 ->timeout(10) // prevent hanging
                 ->post('https://www.google.com/recaptcha/api/siteverify', [
-                    'secret'   => config('services.recaptcha.secret'),
+                    'secret'   => env('RECAPTCHA_SECRET'),
                     'response' => $request->recaptcha_token,
                     'remoteip' => $request->ip(),
                 ]);

@@ -48,7 +48,7 @@ class PermissionController extends Controller
 
         return $this->runInTenant($request->tenant_id, function () {
             return response()->json([
-                'permissions' => Permission::orderBy('name')->get()
+                'permissions' => Permission::orderBy('name')->paginate(10)
             ]);
         });
     }

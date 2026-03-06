@@ -3,6 +3,7 @@
 namespace Modules\UserManagement\Http\Controllers\Api;
 
 use App\Models\User;
+use App\Models\Settings;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
@@ -28,10 +29,10 @@ use BaconQrCode\Renderer\ImageRenderer;
 use BaconQrCode\Renderer\Image\SvgImageBackEnd;
 use BaconQrCode\Renderer\RendererStyle\RendererStyle;
 use BaconQrCode\Writer;
+use Carbon\Carbon;
 
 class AuthController extends Controller
 {   
-  
     private function getPermissionsForRole(string $roleName)
     {
         $map = [
@@ -536,16 +537,8 @@ class AuthController extends Controller
         $request->validate([
             'email' => 'required|email',
             'password' => 'required',
-            'recaptcha_token' => 'required'
         ]);
 
-        $recaptcha = $this->verifyRecaptcha($request->recaptcha_token);
-
-        if (!$recaptcha['success']) {
-            return response()->json([
-                'message' => 'Captcha verification failed'
-            ], 422);
-        }
         
         tenancy()->end();
 
@@ -553,23 +546,65 @@ class AuthController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | 1️⃣ CHECK CENTRAL USER
+        | 1️⃣ CENTRAL USER LOGIN
         |--------------------------------------------------------------------------
         */
-        $centralUser = User::where('email', $request->email)->first();
+        $centralUser = User::select('id', 'name', 'email', 'password', 'email_verified_at', 'user_type', 'failed_attempts', 'locked_until', 'google2fa_secret')->where('email', $request->email)->first();
 
-        if ($centralUser && Hash::check($request->password, $centralUser->password)) {
+        if ($centralUser) {
 
-            if (!$centralUser->email_verified_at) {
-                return response()->json(['message' => 'Verify email first'], 403);
+            // 🔐 Check Account Lock
+            if ($centralUser->locked_until && now()->lessThan($centralUser->locked_until)) {
+                $remainingSeconds = now()->diffInSeconds($centralUser->locked_until);
+                return response()->json([
+                    'message' => 'Account locked. Try again after ' . gmdate("H:i:s", $remainingSeconds)
+                ], 403);
             }
 
-            return $this->handleMfaFlow($centralUser, 'central', null, $google2fa);
+            // ❌ Wrong Password
+            if (!Hash::check($request->password, $centralUser->password)) {
+
+                $centralUser->failed_attempts++;
+
+                if ($centralUser->failed_attempts >= 3) {
+                    $centralUser->locked_until = now()->addHours(24);
+                    $centralUser->failed_attempts = 0;
+                }
+
+                $centralUser->save();
+
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Invalid Credentials.'
+                ], 400);
+            }
+
+            // 📧 Email Verification
+            if (!$centralUser->email_verified_at) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Please verify your email.'
+                ], 403);
+            }
+
+            // ✅ Reset lock
+            $centralUser->update([
+                'failed_attempts' => 0,
+                'locked_until' => null
+            ]);
+
+            // 🔐 MFA FLOW (if enabled)
+            return $this->handleMfaFlow(
+                $centralUser,
+                'central',
+                null,
+                $google2fa
+            );
         }
 
         /*
         |--------------------------------------------------------------------------
-        | 2️⃣ CHECK TENANT USER
+        | 2️⃣ TENANT USER LOGIN
         |--------------------------------------------------------------------------
         */
         $relation = CentralTenantTelations::where([
@@ -577,49 +612,91 @@ class AuthController extends Controller
             'status' => 'active'
         ])->first();
 
-        if ($relation) {
+        if (!$relation) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Invalid credentials.'
+            ], 400);
+        }
 
-            $tenant = Tenant::find($relation->tenant_id);
+        $tenant = Tenant::find($relation->tenant_id);
 
-            if (!$tenant) {
-                return response()->json(['message' => 'Tenant not found'], 404);
+        if (!$tenant) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Tenant not found.'
+            ], 404);
+        }
+
+        tenancy()->initialize($tenant);
+
+        $tenantUser = User::where('email', $request->email)->first();
+
+        if (!$tenantUser) {
+            tenancy()->end();
+
+            return response()->json([
+                'status' => false,
+                'message' => 'Invalid Credentials.'
+            ], 400);
+        }
+
+        // 🔐 Lock Check
+        if ($tenantUser->locked_until && now()->lessThan($tenantUser->locked_until)) {
+            tenancy()->end();
+            $remainingSeconds = now()->diffInSeconds($tenantUser->locked_until);
+            return response()->json([
+                'message' => 'Account locked. Try again after ' . gmdate("H:i:s", $remainingSeconds)
+            ], 403);
+        }
+
+        // ❌ Wrong Password
+        if (!Hash::check($request->password, $tenantUser->password)) {
+
+            $tenantUser->failed_attempts++;
+
+            if ($tenantUser->failed_attempts >= 3) {
+                $tenantUser->locked_until = now()->addHours(24);
+                $tenantUser->failed_attempts = 0;
             }
 
-            tenancy()->initialize($tenant);
-
-            $tenantUser = User::where('email', $request->email)->first();
-
-            if (!$tenantUser || !Hash::check($request->password, $tenantUser->password)) {
-                tenancy()->end();
-                return response()->json(['message' => 'Invalid credentials'], 401);
-            }
-
-            if (!$tenantUser->email_verified_at) {
-                tenancy()->end();
-                return response()->json(['message' => 'Verify email first'], 403);
-            }
-
-            $response = $this->handleMfaFlow($tenantUser, 'tenant', $tenant->id, $google2fa);
+            $tenantUser->save();
 
             tenancy()->end();
 
-            return $response;
+            return response()->json([
+                'status' => false,
+                'message' => 'Invalid Credentials.'
+            ], 400);
         }
 
-        return response()->json(['message' => 'Invalid credentials'], 401);
-    }
+        // 📧 Email Verification
+        if (!$tenantUser->email_verified_at) {
+            tenancy()->end();
 
-    private function verifyRecaptcha($token)
-    {
-        $response = Http::asForm()->post(
-            'https://www.google.com/recaptcha/api/siteverify',
-            [
-                'secret' => env('RECAPTCHA_SECRET'),
-                'response' => $token,
-            ]
+            return response()->json([
+                'status' => false,
+                'message' => 'Please verify your email.'
+            ], 403);
+        }
+
+        // ✅ Reset lock
+        $tenantUser->update([
+            'failed_attempts' => 0,
+            'locked_until' => null
+        ]);
+
+        // 🔐 MFA FLOW
+        $response = $this->handleMfaFlow(
+            $tenantUser,
+            'tenant',
+            $tenant->id,
+            $google2fa
         );
 
-        return $response->json();
+        tenancy()->end();
+
+        return $response;
     }
 
     private function handleMfaFlow($user, $userType, $tenantId, $google2fa)
@@ -634,7 +711,6 @@ class AuthController extends Controller
             $secret = $google2fa->generateSecretKey();
 
             cache()->put('mfa_setup_'.$userType.'_'.$user->id, $secret, now()->addMinutes(10));
-
 
             $qrCodeUrl = $google2fa->getQRCodeUrl(
                 config('app.name'),
@@ -750,16 +826,29 @@ class AuthController extends Controller
 
     private function generateTokens($user, $userType, $tenantId = null)
     {
+        $tokenExpireMinutes = (int) optional(Settings::where('key','access_token_expires_in_minutes')->first())->value ?? 15;
+        $refreshExpireMinutes = (int) optional(Settings::where('key','refresh_token_expires_in_minutes')->first())->value ?? 120;
+
         $user->tokens()->delete();
 
-        $access = $user->createToken('access-token', ['*'], now()->addMinutes(10));
-        $refresh = $user->createToken('refresh-token', ['refresh'], now()->addMinutes(30));
-
+        // Access Token
+        $access = $user->createToken('auth-token', ['*'], now()->addMinutes($tokenExpireMinutes));
         $accessModel = $access->accessToken;
+        $accessModel->token_type = 'access';
         $accessModel->mfa_verified = true;
         $accessModel->tenant_id = $tenantId;
+        $accessModel->expires_at = now()->addMinutes($tokenExpireMinutes);
         $accessModel->save();
 
+        // Refresh Token
+        $refresh = $user->createToken('refresh_token', ['refresh'], now()->addMinutes($refreshExpireMinutes));
+        $refreshToken = $refresh->accessToken;
+        $refreshToken->token_type = 'refresh';
+        $refreshToken->mfa_verified = true;
+        $refreshToken->tenant_id = $tenantId;
+        $refreshToken->expires_at = now()->addMinutes($refreshExpireMinutes);
+        $refreshToken->save();
+      
         return response()->json([
             'status' => true,
             'token' => $access->plainTextToken,
@@ -796,7 +885,7 @@ class AuthController extends Controller
         );
 
         return response()->json([
-            'access_token' => $newAccessToken->plainTextToken
+            'token' => $newAccessToken->plainTextToken
         ]);
     }
 
