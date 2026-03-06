@@ -746,7 +746,7 @@ class AuthController extends Controller
             'tenant_id' => $tenantId
         ]);
     }
-
+ 
     public function verifyMfa(Request $request)
     {
         $request->validate([
