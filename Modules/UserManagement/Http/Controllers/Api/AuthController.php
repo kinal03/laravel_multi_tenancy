@@ -697,7 +697,7 @@ class AuthController extends Controller
         tenancy()->end();
 
         return $response;
-    }
+    } 
 
     private function handleMfaFlow($user, $userType, $tenantId, $google2fa)
     {
