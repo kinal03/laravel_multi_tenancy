@@ -87,3 +87,6 @@ Route::middleware(\App\Http\Middleware\AuthenticateSanctumMultiTenant::class)->g
     Route::post('add-settings', [CommonController::class, 'addSettings']);
     Route::post('update-settings', [CommonController::class, 'updateSettings']);
 });
+
+
+    Route::get('get-agency', [UserController::class, 'getAgency']);

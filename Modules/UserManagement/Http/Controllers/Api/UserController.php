@@ -369,4 +369,13 @@ class UserController extends Controller
             ], 500);
         }
     }
+
+    public function getAgency(Request $request)
+    {
+        $tenant = Tenant::select('id', 'agency_name')->get();
+
+        return response()->json([
+            'agency' => $tenant
+        ],200);
+    }
 }
