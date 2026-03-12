@@ -18,6 +18,7 @@ use App\Models\Tenant,App\Models\CentralTenantTelations,App\Models\UserInvitatio
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\Models\Permission;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\URL;
 use Laravel\Sanctum\PersonalAccessToken;
@@ -25,25 +26,26 @@ use Illuminate\Support\Facades\Crypt;
 use Illuminate\Validation\Rule;
  
 class UserController extends Controller
-{  
+{ 
+
     public function getUsers(Request $request)
     {
         $validator = Validator::make($request->all(), [
             'user_type' => 'nullable|in:admin,agency',
-            'search'   => 'nullable|string|max:255',
+            'search'    => 'nullable|string|max:255',
         ]);
- 
+
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
- 
+
         // Permission mapping
         $permissionMap = [
             'admin'  => 'admin-access',
             'agency' => 'agency-access',
         ];
 
-        if($request->user_type != ''){
+        if ($request->user_type != '') {
             if (!$request->user()->can($permissionMap[$request->user_type])) {
                 return response()->json(['message' => 'Access Denied.'], 403);
             }
@@ -53,27 +55,40 @@ class UserController extends Controller
         $limit = $request->limit ?? 10;
         $sort  = $request->sort ?? 'created_at';
         $dir   = $request->dir ?? 'desc';
- 
-        $users = User::whereHas('roles', function ($q) use ($request) {
-            if($request->user_type != ''){
-                $q->where('name', $request->user_type);
-            }
-        });
- 
-        // Search filter
-        if ($request->filled('search')) {
-            $search = $request->search;
-            $users->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                ->orWhere('email', 'like', "%{$search}%");
-            });
-        }
 
-        $users->orderBy($sort, $dir);
- 
+        /*
+        |---------------------------------------
+        | Create Cache Key
+        |---------------------------------------
+        */
+
+        $cacheKey = 'users_list_' . md5($request->fullUrl());
+
+        $users = Cache::tags(['users_list'])->rememberForever($cacheKey, function () use ($request, $limit, $sort, $dir) {
+
+            $query = User::whereHas('roles', function ($q) use ($request) {
+                if ($request->user_type != '') {
+                    $q->where('name', $request->user_type);
+                }
+            });
+
+            if ($request->filled('search')) {
+                $search = $request->search;
+
+                $query->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                    ->orWhere('email', 'like', "%{$search}%");
+                });
+            }
+
+            $query->orderBy($sort, $dir);
+
+            return $query->paginate($limit);
+        });
+
         return response()->json([
             'status' => true,
-            'users'  => $users->paginate($limit),
+            'users'  => $users,
         ], 200);
     }
  
@@ -82,41 +97,55 @@ class UserController extends Controller
         if (!$request->user()->can('agent-access')) {
             return response()->json(['message' => 'Access Denied.'], 403);
         }
- 
+
         $validator = Validator::make($request->all(), [
             'tenant_id' => 'required|exists:tenants,id',
+            'search' => 'nullable|string|max:255'
         ]);
- 
+
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
- 
+
         $tenant = Tenant::find($request->tenant_id);
- 
+
         if (!$tenant) {
             return response()->json(['message' => 'Agency not found.'], 404);
         }
- 
-        tenancy()->initialize($tenant);
- 
-            $agent = User::select('id','name','email');
- 
+
+        /*
+        |------------------------------------------
+        | Cache Key (Tenant + Filters)
+        |------------------------------------------
+        */
+
+        $cacheKey = 'agents_list_tenant_' . $tenant->id . '_' . md5($request->fullUrl());
+
+        $agents = Cache::tags(['agents_list'])->rememberForever($cacheKey, function () use ($tenant, $request) {
+
+            tenancy()->initialize($tenant);
+
+            $query = User::select('id','name','email');
+
             if ($request->filled('search')) {
                 $search = $request->search;
- 
-                $agent = $agent->where(function ($q) use ($search) {
+
+                $query->where(function ($q) use ($search) {
                     $q->where('name', 'like', "%{$search}%")
                     ->orWhere('email', 'like', "%{$search}%");
                 });
             }
- 
-            $agent = $agent->paginate(10);
- 
-        tenancy()->end();
- 
+
+            $result = $query->paginate(10);
+
+            tenancy()->end();
+
+            return $result;
+        });
+
         return response()->json([
-            'agents' => $agent
-        ],200);
+            'agents' => $agents
+        ], 200);
     }
  
     public function getUserDetails(Request $request)
@@ -246,6 +275,10 @@ class UserController extends Controller
                 }
             }
         }
+
+        Cache::tags(['agency_list'])->flush();
+        Cache::tags(['users_list'])->flush();
+        Cache::tags(['agents_list'])->flush();
  
         return response()->json([
             'status'  => true,
@@ -352,6 +385,10 @@ class UserController extends Controller
 
             DB::commit();
 
+            Cache::tags(['agency_list'])->flush();
+            Cache::tags(['users_list'])->flush();
+            Cache::tags(['agents_list'])->flush();
+
             return response()->json([
                 'status' => true,
                 'message' => 'User deleted successfully from central and related tenants.'
@@ -372,10 +409,16 @@ class UserController extends Controller
 
     public function getAgency(Request $request)
     {
-        $tenant = Tenant::select('id', 'agency_name')->get();
+        $cacheKey = 'agency_list_' . md5($request->fullUrl());
+
+        $tenant = Cache::tags(['agency_list'])->rememberForever($cacheKey, function () {
+
+            return Tenant::select('id', 'agency_name')->get();
+
+        });
 
         return response()->json([
             'agency' => $tenant
-        ],200);
+        ], 200);
     }
 }

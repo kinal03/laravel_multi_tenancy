@@ -8,6 +8,7 @@ use Illuminate\Routing\Controller;
 use Spatie\Permission\Models\Permission;
 use App\Models\User;
 use App\Models\Tenant;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class PermissionController extends Controller
@@ -31,13 +32,13 @@ class PermissionController extends Controller
     }
 
     public function index(Request $request): JsonResponse
-    {   
+    {
         $permissionName = $request->filled('tenant_id')
             ? 'tenant-permission-access'
             : 'permission-access';
 
-        // Clear permission cache (temporary for debug)
-        app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();    
+        // Clear Spatie permission cache (debug or if roles/permissions change frequently)
+        app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
         if (!$request->user()->hasPermissionTo($permissionName, 'sanctum')) {
             return response()->json([
@@ -46,9 +47,24 @@ class PermissionController extends Controller
             ], 403);
         }
 
-        return $this->runInTenant($request->tenant_id, function () {
+        return $this->runInTenant($request->tenant_id, function () use ($request) {
+
+            /*
+            |--------------------------------------
+            | Cache Key (Tenant Safe)
+            |--------------------------------------
+            */
+
+            $cacheKey = 'permissions_list_' . ($request->tenant_id ?? 'central') . '_' . md5($request->fullUrl());
+
+            $permissions = Cache::tags(['permissions_list'])->rememberForever($cacheKey, function () {
+
+                return Permission::orderBy('name')->paginate(10);
+
+            });
+
             return response()->json([
-                'permissions' => Permission::orderBy('name')->paginate(10)
+                'permissions' => $permissions
             ]);
         });
     }
@@ -79,6 +95,8 @@ class PermissionController extends Controller
                 'guard_name' => 'sanctum',
             ]);
 
+            Cache::tags(['permissions_list'])->flush();
+            Cache::tags(['roles_list'])->flush();
             return response()->json([
                 'message' => 'Permission created successfully',
                 'permission' => $permission
@@ -139,6 +157,9 @@ class PermissionController extends Controller
             $permission = Permission::findOrFail($id);
             $permission->update($validated);
 
+            Cache::tags(['permissions_list'])->flush();
+            Cache::tags(['roles_list'])->flush();
+
             return response()->json([
                 'message' => 'Permission updated successfully',
                 'permission' => $permission
@@ -170,6 +191,9 @@ class PermissionController extends Controller
             }
             
             $permission->delete();
+
+            Cache::tags(['permissions_list'])->flush();
+            Cache::tags(['roles_list'])->flush();
 
             return response()->json([
                 'message' => 'Permission deleted successfully'

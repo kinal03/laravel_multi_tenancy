@@ -24,6 +24,7 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\URL;
 use Laravel\Sanctum\PersonalAccessToken;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\Rule;
  
 class CommonController extends Controller
@@ -33,23 +34,29 @@ class CommonController extends Controller
         if (!$request->user()->can('settings-access')) {
             return response()->json(['message' => 'Access Denied.'], 403);
         }
- 
-        $Settings = Settings::select('id','key','value');
- 
-        if ($request->filled('search')) {
-            $search = $request->search;
- 
-            $Settings = $Settings->where(function ($q) use ($search) {
-                $q->where('key', 'like', "%{$search}%")
-                ->orWhere('value', 'like', "%{$search}%");
-            });
-        }
 
-        $Settings = $Settings->paginate(10);
-        
+        $cacheKey = 'settings_list_' . md5($request->fullUrl());
+
+        $settings = Cache::tags(['settings_list'])->rememberForever($cacheKey, function () use ($request) {
+
+            $query = Settings::select('id','key','value');
+
+            if ($request->filled('search')) {
+                $search = $request->search;
+
+                $query->where(function ($q) use ($search) {
+                    $q->where('key', 'like', "%{$search}%")
+                    ->orWhere('value', 'like', "%{$search}%");
+                });
+            }
+
+            return $query->paginate(10);
+
+        });
+
         return response()->json([
-            'settings' => $Settings
-        ],200);
+            'settings' => $settings
+        ], 200);
     }
  
     public function getSettingDetails(Request $request): JsonResponse
@@ -91,6 +98,8 @@ class CommonController extends Controller
         $Settings->key = $request->key;
         $Settings->value = $request->value;
         $Settings->save();
+
+        Cache::tags(['settings_list'])->flush();
  
         return response()->json([
             'status' => true,
@@ -122,6 +131,7 @@ class CommonController extends Controller
         $setting->key = $request->key;
         $setting->value = $request->value;
         $setting->save();
+        Cache::tags(['settings_list'])->flush();
  
         return response()->json([
             'status' => true,

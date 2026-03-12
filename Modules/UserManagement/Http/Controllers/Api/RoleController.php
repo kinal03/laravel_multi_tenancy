@@ -9,6 +9,8 @@ use Spatie\Permission\Models\Role;
 use Spatie\Permission\Models\Permission;
 use App\Models\User;
 use App\Models\Tenant;
+use Illuminate\Support\Facades\Cache;
+
 
 class RoleController extends Controller
 {
@@ -37,40 +39,54 @@ class RoleController extends Controller
     public function index(Request $request): JsonResponse
     {   
         return $this->runInTenant($request->tenant_id, function () use ($request) {
+
             $permission = $request->filled('tenant_id')
-            ? 'tenant-role-access'
-            : 'role-access';
-            
+                ? 'tenant-role-access'
+                : 'role-access';
+
             if (!$request->user()->can($permission)) {
                 return response()->json(['message' => 'Access Denied.'], 403);
             }
 
-            
-            if($request->select == true){
-                $roles = Role::select('id', 'name')->orderBy('name')->get();
+            /*
+            |-----------------------------------------
+            | Create Cache Key (Tenant Safe)
+            |-----------------------------------------
+            */
+
+            $cacheKey = 'roles_list_' . ($request->tenant_id ?? 'central') . '_' . md5($request->fullUrl());
+
+            $roles = Cache::tags(['roles_list'])->rememberForever($cacheKey, function () use ($request) {
+
+                if ($request->select == true) {
+
+                    return Role::select('id', 'name')
+                        ->orderBy('name')
+                        ->get();
+
                 } else {
-                    // Default values
-                    
+
                     $limit = $request->limit ?? 10;
                     $sort  = $request->sort ?? 'created_at';
                     $dir   = $request->dir ?? 'desc';
-                    // echo 'dfgdfg'; die();
 
-                $roles = Role::with('permissions');
-                
-                 // Search filter
-                if ($request->filled('search')) {
-                    $search = $request->search;
-                    $roles->where(function ($q) use ($search) {
-                        $q->where('name', 'like', "%{$search}%")
-                          ->orWhereHas('permissions', function ($q2) use ($search) {
-                              $q2->where('name', 'like', "%{$search}%");
-                          });
-                    });
+                    $query = Role::with('permissions');
+
+                    if ($request->filled('search')) {
+                        $search = $request->search;
+
+                        $query->where(function ($q) use ($search) {
+                            $q->where('name', 'like', "%{$search}%")
+                            ->orWhereHas('permissions', function ($q2) use ($search) {
+                                $q2->where('name', 'like', "%{$search}%");
+                            });
+                        });
+                    }
+
+                    return $query->orderBy($sort, $dir)->paginate($limit);
                 }
 
-               $roles = $roles->orderBy($sort, $dir)->paginate($limit);
-            }
+            });
 
             return response()->json([
                 'roles' => $roles
@@ -103,6 +119,8 @@ class RoleController extends Controller
             if (!empty($validated['permissions'])) {
                 $role->syncPermissions($validated['permissions']);
             }
+
+            Cache::tags(['roles_list'])->flush();
 
             return response()->json([
                 'message' => 'Role created successfully',
@@ -158,6 +176,8 @@ class RoleController extends Controller
                 $role->syncPermissions($validated['permissions']);
             }
 
+            Cache::tags(['roles_list'])->flush();
+
             return response()->json([
                 'message' => 'Role updated successfully',
                 'role' => $role->load('permissions')
@@ -182,6 +202,8 @@ class RoleController extends Controller
             }
             $role->delete();
 
+            Cache::tags(['roles_list'])->flush();
+
             return response()->json([
                 'message' => 'Role deleted successfully'
             ]);
@@ -200,6 +222,8 @@ class RoleController extends Controller
             $role = Role::findOrFail($roleId);
 
             $user->assignRole($role);
+
+            Cache::tags(['roles_list'])->flush();
 
             return response()->json([
                 'message' => 'Role assigned to user successfully',

@@ -67,6 +67,7 @@ Route::middleware(\App\Http\Middleware\AuthenticateSanctumMultiTenant::class)->g
     Route::get('/invitation-list', [InvitateUserController::class, 'invitationList']);
     Route::post('invite', [InvitateUserController::class, 'invite']);
     Route::post('resend-invite', [InvitateUserController::class, 'resendInvite']);
+    Route::get('get-agency', [UserController::class, 'getAgency']);
     
     Route::get('/user', [AuthController::class, 'userDetails']); // Get login user details
     Route::delete('/user/{id}', [AuthController::class, 'deleteUser']);
@@ -87,6 +88,3 @@ Route::middleware(\App\Http\Middleware\AuthenticateSanctumMultiTenant::class)->g
     Route::post('add-settings', [CommonController::class, 'addSettings']);
     Route::post('update-settings', [CommonController::class, 'updateSettings']);
 });
-
-
-    Route::get('get-agency', [UserController::class, 'getAgency']);

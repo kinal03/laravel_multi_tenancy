@@ -19,6 +19,7 @@ use Spatie\Permission\Models\Role;
 use Spatie\Permission\Models\Permission;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\URL;
 use Laravel\Sanctum\PersonalAccessToken;
 use Illuminate\Support\Facades\Crypt;
@@ -96,6 +97,9 @@ class InvitateUserController extends Controller
         
         // Send email once
         Mail::to($request->email)->send(new \App\Mail\UserInvitationMail($invitation, $inviter,$frontendUrl));
+
+        Cache::tags(['invitation_list_user_' . $user->id])->flush();
+
  
         return response()->json([
             'message' => 'Invitation sent successfully.'
@@ -282,6 +286,8 @@ class InvitateUserController extends Controller
             $superAdminRole->syncPermissions($allPermissions);
 
             tenancy()->end();
+            
+            Cache::tags(['agency_list'])->flush();
         }
 
         /* ================= AGENT ================= */
@@ -330,6 +336,7 @@ class InvitateUserController extends Controller
             // $user->assignRole($role);
 
             tenancy()->end();
+            Cache::tags(['agents_list'])->flush();
         }
 
         /* ================= INVALID ================= */
@@ -343,6 +350,7 @@ class InvitateUserController extends Controller
             'status' => 'accepted'
         ]);
  
+        Cache::tags(['users_list'])->flush();
         return response()->json([
             'message' => 'Account created successfully.'
         ]);
@@ -372,27 +380,36 @@ class InvitateUserController extends Controller
 
     public function invitationList(Request $request): JsonResponse
     {
-        $user = User::find($request->user()->id);
- 
-        $invitations = UserInvitations::select('id', 'name', 'email', 'user_type', 'status', 'created_at')->where('created_by', $user->id);
-        
-        if ($request->has('status')) {
-            $invitations->where('status', $request->status);
-        }
+        $user = $request->user();
+        // $user = User::find(1);
 
-        if ($request->has('user_type')) {
-            $invitations->where('user_type', $request->user_type);
-        }
 
-        if ($request->has('search')) {
-            $invitations->where(function ($query) use ($request) {
-                $query->where('name', 'like', '%' . $request->search . '%')
+        // Create unique cache key based on URL + user
+        $cacheKey = 'invitation_list_user_' . $user->id . '_' . md5($request->fullUrl());
+
+        $invitations = Cache::remember($cacheKey, 300, function () use ($request, $user) {
+
+            $query = UserInvitations::select('id', 'name', 'email', 'user_type', 'status', 'created_at')
+                ->where('created_by', $user->id);
+
+            if ($request->has('status')) {
+                $query->where('status', $request->status);
+            }
+
+            if ($request->has('user_type')) {
+                $query->where('user_type', $request->user_type);
+            }
+
+            if ($request->has('search')) {
+                $query->where(function ($q) use ($request) {
+                    $q->where('name', 'like', '%' . $request->search . '%')
                     ->orWhere('email', 'like', '%' . $request->search . '%');
-            });
-        }
+                });
+            }
 
-        $invitations = $invitations->paginate(10);
- 
+            return $query->paginate(10);
+        });
+
         return response()->json([
             'message' => 'Invitation list retrieved successfully',
             'status' => true,
